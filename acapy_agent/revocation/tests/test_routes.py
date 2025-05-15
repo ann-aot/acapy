@@ -1,6 +1,4 @@
 import os
-import shutil
-# from unittest import IsolatedAsyncioTestCase
 import unittest
 import pytest
 from aiohttp.web import HTTPBadRequest, HTTPNotFound
@@ -28,7 +26,7 @@ from ..models.issuer_rev_reg_record import IssuerRevRegRecord
 import json
 from unittest.mock import MagicMock
 from multidict import MultiDict
-# from unittest import mock
+import tempfile
 
 @pytest.mark.asyncio
 class TestRevocationRoutes(unittest.TestCase):
@@ -1280,25 +1278,25 @@ def make_mock_request(query=None, path="/admin/revocation/delete_tails"):
     request.path = path
     return request
 
-
 @pytest.mark.asyncio
 class TestDeleteTails:
-    def setup_method(self):
+    def setup_method(self, method):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.main_dir = self.temp_dir.name
+
         self.rev_reg_id = "rev_reg_id_123"
         self.cred_def_id = "cred_def_id_456"
-        self.main_dir = "cred"
 
         self.tails_path = os.path.join(self.main_dir, "rev", "tails")
         os.makedirs(os.path.dirname(self.tails_path), exist_ok=True)
         with open(self.tails_path, "w") as f:
             f.write("tail data")
 
-        self.cred_dir = os.path.join(self.main_dir, "cred", self.cred_def_id)
+        self.cred_dir = os.path.join(self.main_dir, self.cred_def_id)
         os.makedirs(self.cred_dir, exist_ok=True)
 
-    def teardown_method(self):
-        if os.path.exists(self.main_dir):
-            shutil.rmtree(self.main_dir)
+    def teardown_method(self, method):
+        self.temp_dir.cleanup()
 
     @mock.patch.object(IssuerRevRegRecord, 'retrieve_by_revoc_reg_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.shutil.rmtree")
@@ -1310,44 +1308,37 @@ class TestDeleteTails:
 
         mock_rmtree.assert_called_once_with(os.path.dirname(self.tails_path))
         assert result.status == 200
-        resp = json.loads(result.text)
-        assert resp == {"message": "All files deleted successfully"}
+        assert json.loads(result.text) == {"message": "All files deleted successfully"}
 
     @mock.patch.object(IssuerRevRegRecord, 'query_by_cred_def_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.os.path.exists", return_value=True)
     @mock.patch("acapy_agent.revocation.routes.os.listdir")
     @mock.patch("acapy_agent.revocation.routes.shutil.rmtree")
     async def test_delete_tails_by_cred_def_id(self, mock_rmtree, mock_listdir, mock_path_exists, mock_query):
-        # Setup mock IssuerRevRegRecord with tails_local_path
         mock_record = MagicMock()
-        mock_record.tails_local_path = os.path.join(self.main_dir, "cred", self.cred_def_id, "tails")
+        mock_record.tails_local_path = os.path.join(self.cred_dir, "tails")
         mock_query.return_value = [mock_record]
 
-        # Simulate tail directories inside main_dir_cred that match the cred_def_id pattern
-        mock_listdir.return_value = [f"{self.cred_def_id}_some_dir", "other_dir"]
+        mock_listdir.return_value = [f"{self.cred_def_id}_some_dir"]
 
         request = make_mock_request({"cred_def_id": self.cred_def_id})
         result = await test_module.delete_tails(request)
 
-        # Check rmtree called once on the matched directory
         expected_path = os.path.join(os.path.dirname(os.path.dirname(mock_record.tails_local_path)), f"{self.cred_def_id}_some_dir")
         mock_rmtree.assert_called_once_with(expected_path)
 
         assert result.status == 200
-        resp = json.loads(result.text)
-        assert resp == {"message": "All files deleted successfully"}
-
+        assert json.loads(result.text) == {"message": "All files deleted successfully"}
 
     @mock.patch.object(IssuerRevRegRecord, 'query_by_cred_def_id', new_callable=mock.AsyncMock)
-    async def test_delete_tails_not_found(self, mock_query_by_cred_def_id):
-        mock_query_by_cred_def_id.return_value = []
+    async def test_delete_tails_not_found(self, mock_query):
+        mock_query.return_value = []
 
         request = make_mock_request({"cred_def_id": "invalid_cred_def_id"})
         result = await test_module.delete_tails(request)
 
         assert result.status == 404
-        resp = json.loads(result.text)
-        assert resp == {"message": "No tail files found for deletion"}
+        assert json.loads(result.text) == {"message": "No tail files found for deletion"}
 
     @mock.patch.object(IssuerRevRegRecord, 'retrieve_by_revoc_reg_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.shutil.rmtree", side_effect=FileNotFoundError)
@@ -1358,8 +1349,7 @@ class TestDeleteTails:
         result = await test_module.delete_tails(request)
 
         assert result.status == 404
-        resp = json.loads(result.text)
-        assert resp == {"message": "No such file or directory"}
+        assert json.loads(result.text) == {"message": "No such file or directory"}
 
     @mock.patch.object(IssuerRevRegRecord, 'retrieve_by_revoc_reg_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.shutil.rmtree", side_effect=Exception("generic error"))
@@ -1369,8 +1359,7 @@ class TestDeleteTails:
         request = make_mock_request({"rev_reg_id": self.rev_reg_id})
         result = await test_module.delete_tails(request)
 
-        resp = json.loads(result.text)
-        assert resp == {"message": "generic error"}
+        assert json.loads(result.text) == {"message": "generic error"}
 
     @mock.patch.object(IssuerRevRegRecord, 'query_by_cred_def_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.os.path.exists", return_value=True)
@@ -1388,8 +1377,7 @@ class TestDeleteTails:
 
         mock_rmtree.assert_called_once()
         assert result.status == 200
-        resp = json.loads(result.text)
-        assert resp == {"message": "All files deleted successfully"}
+        assert json.loads(result.text) == {"message": "All files deleted successfully"}
 
     @mock.patch.object(IssuerRevRegRecord, 'query_by_cred_def_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.os.listdir")
@@ -1404,8 +1392,7 @@ class TestDeleteTails:
         result = await test_module.delete_tails(request)
 
         assert result.status == 404
-        resp = json.loads(result.text)
-        assert resp == {"message": "No such file or directory"}
+        assert json.loads(result.text) == {"message": "No such file or directory"}
 
     @mock.patch.object(IssuerRevRegRecord, 'query_by_cred_def_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.os.listdir", side_effect=FileNotFoundError)
@@ -1418,8 +1405,7 @@ class TestDeleteTails:
         result = await test_module.delete_tails(request)
 
         assert result.status == 404
-        resp = json.loads(result.text)
-        assert resp == {"message": "No such file or directory"}
+        assert json.loads(result.text) == {"message": "No such file or directory"}
 
     @mock.patch.object(IssuerRevRegRecord, 'query_by_cred_def_id', new_callable=mock.AsyncMock)
     @mock.patch("acapy_agent.revocation.routes.os.listdir", side_effect=Exception("generic error"))
@@ -1431,13 +1417,11 @@ class TestDeleteTails:
         request = make_mock_request({"cred_def_id": self.cred_def_id})
         result = await test_module.delete_tails(request)
 
-        resp = json.loads(result.text)
-        assert resp == {"message": "generic error"}
+        assert json.loads(result.text) == {"message": "generic error"}
 
     async def test_delete_tails_no_query_param(self):
         request = make_mock_request({})
         result = await test_module.delete_tails(request)
 
         assert result.status == 400
-        resp = json.loads(result.text)
-        assert resp == {"message": "Must provide either rev_reg_id or cred_def_id"}
+        assert json.loads(result.text) == {"message": "Must provide either rev_reg_id or cred_def_id"}
